@@ -1,0 +1,30 @@
+name: Robo Setor Estrategico
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Roda a cada hora cheia
+  workflow_dispatch:    # Permite rodar manualmente o botão
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Instalar Bibliotecas
+        run: pip install -r requirements.txt
+
+      - name: Criar Credenciais
+        env:
+          GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDS }}
+        run: echo "$GDRIVE_CREDS" > credentials.json
+
+      - name: Rodar Robô
+        run: python main.py
