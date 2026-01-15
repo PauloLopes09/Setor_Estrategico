@@ -2,15 +2,19 @@ name: Robo Setor Estrategico
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 * * * *' # Roda a cada hora
   workflow_dispatch:
+
+# Permissões necessárias para o robô poder "escrever" no repositório
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar código
+      - name: Baixar código do repositório
         uses: actions/checkout@v3
 
       - name: Instalar Python
@@ -18,16 +22,17 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: 🕵️ RAIO-X (Ver arquivos na pasta)
-        run: ls -R
-
       - name: Instalar Bibliotecas
         run: pip install -r requirements.txt
 
-      - name: Criar Credenciais
-        env:
-          GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDS }}
-        run: echo "$GDRIVE_CREDS" > credentials.json
-
-      - name: Rodar Robô
+      - name: Rodar o Robô
         run: python robo_diario.py
+
+      - name: Salvar Dados no GitHub (Commit & Push)
+        run: |
+          git config --global user.name 'Robo Licitacao'
+          git config --global user.email 'robo@noreply.github.com'
+          git add data/licitacoes_rn.csv
+          # Só faz o commit se houver mudança no arquivo
+          git commit -m "Atualização Automática dos Dados" || echo "Nenhuma mudança para salvar"
+          git push
