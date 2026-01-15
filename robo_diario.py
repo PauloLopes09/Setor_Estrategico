@@ -5,7 +5,6 @@ import os
 import numpy as np
 
 # --- CONFIGURAÇÃO ---
-# Caminho onde o arquivo ficará salvo no GitHub
 PASTA_DADOS = "data"
 NOME_ARQUIVO = "licitacoes_rn.csv"
 CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO)
@@ -35,7 +34,7 @@ def limpar_dinheiro(valor_bruto):
     except:
         return 0.0
 
-# --- CÉREBRO: CLASSIFICAÇÃO AUDITOR (NATUREZA + FUNÇÃO) ---
+# --- CÉREBRO: CLASSIFICAÇÃO AUDITOR ---
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
     natureza = "AQUISIÇÃO" 
@@ -89,9 +88,8 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (CSV Local)...")
+    print("🤖 Iniciando Robô GitHub (ISO Date)...")
     
-    # 1. Cria a pasta 'data' se não existir
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
 
@@ -114,9 +112,12 @@ def executar_robo():
                     valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
                     link = item.get('linkSistemaOrigem', 'N/A')
                     
+                    # Extrai a data bruta (Ex: 2026-01-15T14:00:00)
+                    data_bruta = item.get('dataPublicacaoPncp', '')
+                    
                     novos_dados.append({
                         "ID_Unico": str(link),
-                        "Data": item.get('dataPublicacaoPncp', '')[:10],
+                        "Data": data_bruta, # Mantém bruto por enquanto
                         "Modalidade": nome,
                         "Cidade": item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'),
                         "Órgão": item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'),
@@ -135,28 +136,31 @@ def executar_robo():
         print("💤 Nenhum dado novo.")
         return
 
-    # 2. Lógica de "Banco de Dados" CSV
     print("💾 Processando arquivo CSV...")
     
     if os.path.exists(CAMINHO_COMPLETO):
-        # Lê o CSV que já existe no GitHub
         df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig')
         df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
         df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
-        
-        # Junta e Remove Duplicatas
         df_total = pd.concat([df_antigo, df_novo])
         df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
     else:
         df_total = df_novo
 
-    # Limpeza Final
+    # --- TRATAMENTO FINAL (DATA ISO 8601 & LIMPEZA) ---
     df_total = df_total.fillna('')
     df_total = df_total.replace([np.inf, -np.inf], 0)
 
-    # 3. Salva o arquivo CSV na pasta data/
+    # 1. Converte para datetime real (lida com fuso, T, etc)
+    df_total['Data'] = pd.to_datetime(df_total['Data'], errors='coerce')
+    
+    # 2. Força o formato de string YYYY-MM-DD
+    # Isso garante que no CSV fique: 2026-01-15 (sem horário)
+    df_total['Data'] = df_total['Data'].dt.strftime('%Y-%m-%d')
+    # --------------------------------------------------
+
     df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig')
-    print(f"✅ Arquivo {NOME_ARQUIVO} atualizado com {len(df_total)} linhas.")
+    print(f"✅ Arquivo atualizado (Datas Padronizadas): {len(df_total)} linhas.")
 
 if __name__ == "__main__":
     executar_robo()
