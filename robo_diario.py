@@ -1,13 +1,14 @@
 import requests
 import pandas as pd
 from datetime import datetime
-import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import numpy as np
+import os
 
 # --- CONFIGURAÇÃO ---
-PASTA_DADOS = "data"
-NOME_ARQUIVO = "licitacoes_rn.csv"
-CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO)
+NOME_PLANILHA_GOOGLE = "Base_Licitacoes_RN" 
+NOME_ABA = "Dados"
 
 # Configurações do Portal Nacional (PNCP)
 BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
@@ -86,14 +87,16 @@ def classificar_auditor(objeto):
 
     return natureza, funcao
 
+# --- CONEXÃO GOOGLE SHEETS ---
+def conectar_google():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    return ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo Preservação de Dados)...")
-    
-    if not os.path.exists(PASTA_DADOS):
-        os.makedirs(PASTA_DADOS)
-
+    print("🤖 Iniciando Robô Google Sheets (Retorno)...")
     novos_dados = []
+    
     modalidades = {"6": "Pregão", "5": "Concorrência", "8": "Dispensa"}
     
     for cod, nome in modalidades.items():
@@ -130,38 +133,50 @@ def executar_robo():
             except: break
 
     df_novo = pd.DataFrame(novos_dados)
+    
     if df_novo.empty:
         print("💤 Nenhum dado novo.")
         return
 
-    print("💾 Processando arquivo CSV...")
-    
-    if os.path.exists(CAMINHO_COMPLETO):
-        df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig')
-        df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-        df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
-        df_total = pd.concat([df_antigo, df_novo])
-        df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
-    else:
-        df_total = df_novo
+    print("☁️ Conectando ao Google Sheets...")
+    try:
+        creds = conectar_google()
+        client = gspread.authorize(creds)
+        sheet = client.open(NOME_PLANILHA_GOOGLE).worksheet(NOME_ABA)
+        
+        dados_antigos = sheet.get_all_records()
+        df_antigo = pd.DataFrame(dados_antigos)
+        
+        if not df_antigo.empty:
+            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
+            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
+            df_total = pd.concat([df_antigo, df_novo])
+            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+        else:
+            df_total = df_novo
 
-    # --- LÓGICA DE PRESERVAÇÃO ---
-    df_total = df_total.fillna('') # Garante que nada é NaN
-    df_total = df_total.replace([np.inf, -np.inf], 0)
+        # --- LIMPEZA DE DADOS (CRÍTICO PARA O GOOGLE) ---
+        df_total = df_total.fillna('')
+        df_total = df_total.replace([np.inf, -np.inf], 0)
+        
+        # Tratamento de Data
+        df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
+        df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
+        df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
+        df_total = df_total.drop(columns=['Data_Temp'])
 
-    # 1. Tenta converter Data
-    df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
-
-    # 2. Se a conversão deu certo, formata YYYY-MM-DD. 
-    #    Se deu errado (NaT), fica vazia ("").
-    #    NÃO EXCLUÍMOS A LINHA.
-    df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
-    
-    # 3. Remove a coluna temporária
-    df_total = df_total.drop(columns=['Data_Temp'])
-
-    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig')
-    print(f"✅ Arquivo salvo! Total de registros: {len(df_total)} (incluindo os sem data).")
+        print(f"💾 Salvando {len(df_total)} registros na nuvem...")
+        
+        # Limpa e reescreve a planilha
+        sheet.clear()
+        sheet.update(
+            range_name='A1', 
+            values=[df_total.columns.values.tolist()] + df_total.values.tolist()
+        )
+        print(f"✅ SUCESSO! Google Sheets atualizado.")
+        
+    except Exception as e:
+        print(f"❌ Erro ao salvar no Google: {e}")
 
 if __name__ == "__main__":
     executar_robo()
