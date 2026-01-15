@@ -2,8 +2,8 @@ name: Robo Setor Estrategico
 
 on:
   schedule:
-    - cron: '0 * * * *' # Roda a cada hora cheia
-  workflow_dispatch:    # Permite rodar manualmente o botão
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,6 +18,9 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: 🕵️ RAIO-X (Ver arquivos na pasta)
+        run: ls -R
+
       - name: Instalar Bibliotecas
         run: pip install -r requirements.txt
 
@@ -27,4 +30,4 @@ jobs:
         run: echo "$GDRIVE_CREDS" > credentials.json
 
       - name: Rodar Robô
-        run: python main.py
+        run: python robo_diario.py
