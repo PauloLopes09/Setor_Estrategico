@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import numpy as np # Importante para tratar os erros numéricos
+import numpy as np # Importante para tratar erros numéricos
 
 # --- CONFIGURAÇÃO ---
 NOME_PLANILHA_GOOGLE = "Base_Licitacoes_RN" 
@@ -24,7 +24,7 @@ HEADERS = {
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
     
-    # --- ETAPA 1: DEFINIR A NATUREZA ---
+    # --- ETAPA 1: DEFINIR A NATUREZA (O TIPO DE GASTO) ---
     natureza = "AQUISIÇÃO" 
     
     if any(x in texto for x in ['contratacao', 'prestacao', 'servico', 'manutencao', 'reparo', 'limpeza', 'locacao de mao', 'apoio', 'assessoria', 'consultoria', 'publicidade', 'gestao']):
@@ -37,7 +37,7 @@ def classificar_auditor(objeto):
         else:
             natureza = "LOCAÇÃO"
 
-    # --- ETAPA 2: DEFINIR A FUNÇÃO ---
+    # --- ETAPA 2: DEFINIR A FUNÇÃO (O SETOR) ---
     scores = {
         'INFRAESTRUTURA URBANA': 0, 'EDIFICAÇÕES PÚBLICAS': 0, 'MATERIAIS DE CONSTRUÇÃO': 0,
         'LIMPEZA URBANA': 0, 'LIMPEZA E CONSERVAÇÃO PREDIAL': 0,
@@ -73,4 +73,108 @@ def classificar_auditor(objeto):
     if any(x in texto for x in ['show', 'palco', 'som', 'evento', 'festividade', 'decoracao', 'banda']): scores['EVENTOS E CULTURA'] += 15
     if any(x in texto for x in ['adubo', 'sementes', 'corte de terra', 'agricola']): scores['AGRICULTURA E MEIO AMBIENTE'] += 15
 
-    funcao = max(scores, key=scores.
+    funcao = max(scores, key=scores.get)
+    if scores[funcao] < 1: funcao = 'OUTROS'
+
+    # Correções Finais (Desempate)
+    if 'caminhao de lixo' in texto or 'compactador' in texto: natureza, funcao = "SERVIÇOS", "LIMPEZA URBANA"
+    if 'transporte escolar' in texto: natureza, funcao = "SERVIÇOS", "EDUCAÇÃO - TRANSPORTE"
+    if 'pavimentacao' in texto: natureza, funcao = "OBRAS", "INFRAESTRUTURA URBANA"
+    if 'licenca' in texto and 'software' in texto: natureza, funcao = "AQUISIÇÃO", "TI E TECNOLOGIA"
+    if funcao == 'FROTA E COMBUSTÍVEL' and 'combustivel' in texto: natureza = "AQUISIÇÃO"
+
+    return natureza, funcao
+
+# --- CONEXÃO GOOGLE SHEETS ---
+def conectar_google():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    return ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+
+# --- ROBÔ ---
+def executar_robo():
+    print("🤖 Iniciando Robô Auditor (V5.1 - Completo)...")
+    novos_dados = []
+    
+    modalidades = {"6": "Pregão", "5": "Concorrência", "8": "Dispensa"}
+    
+    for cod, nome in modalidades.items():
+        print(f"   > Buscando {nome}...")
+        pagina = 1
+        while True:
+            try:
+                url = f"{BASE_URL}?dataInicial={DATA_INICIO}&dataFinal={DATA_FIM}&codigoModalidadeContratacao={cod}&uf={ESTADO}&pagina={pagina}"
+                resp = requests.get(url, headers=HEADERS, timeout=10)
+                
+                if resp.status_code != 200: break
+                
+                itens = resp.json().get('data', [])
+                if not itens: break 
+                
+                for item in itens:
+                    nat, func = classificar_auditor(item.get('objetoCompra', ''))
+                    
+                    val = item.get('valorTotalEstimado', 0)
+                    try: valor_final = float(val)
+                    except: valor_final = 0.0
+                    
+                    link = item.get('linkSistemaOrigem', 'N/A')
+                    
+                    novos_dados.append({
+                        "ID_Unico": str(link),
+                        "Data": item.get('dataPublicacaoPncp', '')[:10],
+                        "Modalidade": nome,
+                        "Cidade": item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'),
+                        "Órgão": item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'),
+                        "Natureza": nat,
+                        "Função": func,
+                        "Categoria_Final": f"{nat} - {func}",
+                        "Objeto": item.get('objetoCompra', 'Sem descrição'),
+                        "Valor": valor_final,
+                        "Link": link
+                    })
+                pagina += 1
+            except:
+                break
+
+    df_novo = pd.DataFrame(novos_dados)
+    
+    if df_novo.empty:
+        print("💤 Nenhum dado novo.")
+        return
+
+    print("☁️ Conectando ao Google Sheets...")
+    try:
+        creds = conectar_google()
+        client = gspread.authorize(creds)
+        sheet = client.open(NOME_PLANILHA_GOOGLE).worksheet(NOME_ABA)
+        
+        dados_antigos = sheet.get_all_records()
+        df_antigo = pd.DataFrame(dados_antigos)
+        
+        if not df_antigo.empty:
+            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
+            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
+            df_total = pd.concat([df_antigo, df_novo])
+            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+        else:
+            df_total = df_novo
+
+        # --- CORREÇÃO DO ERRO JSON ---
+        # Substitui NaN (erro) por vazio "" e Infinity por 0
+        df_total = df_total.fillna('')
+        df_total = df_total.replace([np.inf, -np.inf], 0)
+        # -----------------------------
+
+        print(f"💾 Salvando {len(df_total)} registros...")
+        sheet.clear()
+        sheet.update(
+            range_name='A1', 
+            values=[df_total.columns.values.tolist()] + df_total.values.tolist()
+        )
+        print(f"✅ SUCESSO! Auditoria concluída.")
+        
+    except Exception as e:
+        print(f"❌ Erro ao salvar: {e}")
+
+if __name__ == "__main__":
+    executar_robo()
