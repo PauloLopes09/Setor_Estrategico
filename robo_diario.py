@@ -1,13 +1,16 @@
 import requests
 import pandas as pd
 from datetime import datetime
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import numpy as np 
+import os
+import numpy as np
 
 # --- CONFIGURAÇÃO ---
-NOME_PLANILHA_GOOGLE = "Base_Licitacoes_RN" 
-NOME_ABA = "Dados"
+# Caminho onde o arquivo ficará salvo no GitHub
+PASTA_DADOS = "data"
+NOME_ARQUIVO = "licitacoes_rn.csv"
+CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO)
+
+# Configurações do Portal Nacional (PNCP)
 BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 ESTADO = "RN"
 DATA_INICIO = "20260101"
@@ -18,40 +21,21 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- FUNÇÃO NOVA: LIMPEZA DE VALORES (CORRETOR FINANCEIRO) ---
+# --- FUNÇÃO DE LIMPEZA FINANCEIRA ---
 def limpar_dinheiro(valor_bruto):
-    """
-    Transforma qualquer bagunça (R$ 1.000,00 / 1.000.00 / None) em float puro (1000.00)
-    """
-    if valor_bruto is None:
-        return 0.0
-    
-    # Se já for número, garante que é float e retorna
-    if isinstance(valor_bruto, (int, float)):
-        return float(valor_bruto)
-    
-    # Se for texto, começa a limpeza
+    if valor_bruto is None: return 0.0
+    if isinstance(valor_bruto, (int, float)): return float(valor_bruto)
     texto = str(valor_bruto).strip()
-    
-    if texto == "":
-        return 0.0
-        
+    if texto == "": return 0.0
     try:
-        # Remove Símbolo de Moeda e Espaços
         texto = texto.replace('R$', '').replace('$', '').strip()
-        
-        # Lógica Brasil: Se tem vírgula, ela é decimal.
-        # Ex: "1.500,50" -> Tira ponto, troca vírgula por ponto -> 1500.50
         if ',' in texto:
-            texto = texto.replace('.', '') # Remove separador de milhar
-            texto = texto.replace(',', '.') # Transforma vírgula em ponto decimal
-        
+            texto = texto.replace('.', '').replace(',', '.')
         return float(texto)
     except:
-        # Se falhar tudo, retorna 0 para não travar o robô
         return 0.0
 
-# --- CÉREBRO: CLASSIFICAÇÃO "AUDITOR" ---
+# --- CÉREBRO: CLASSIFICAÇÃO AUDITOR (NATUREZA + FUNÇÃO) ---
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
     natureza = "AQUISIÇÃO" 
@@ -61,10 +45,8 @@ def classificar_auditor(objeto):
     elif any(x in texto for x in ['obra', 'pavimentacao', 'construcao', 'reforma', 'ampliacao', 'drenagem', 'engenharia', 'edificacao', 'muro', 'tapa buraco']):
         natureza = "OBRAS"
     elif any(x in texto for x in ['locacao', 'aluguel', 'arrendamento']):
-        if 'mao de obra' in texto or 'motorista' in texto:
-            natureza = "SERVIÇOS"
-        else:
-            natureza = "LOCAÇÃO"
+        if 'mao de obra' in texto or 'motorista' in texto: natureza = "SERVIÇOS"
+        else: natureza = "LOCAÇÃO"
 
     scores = {
         'INFRAESTRUTURA URBANA': 0, 'EDIFICAÇÕES PÚBLICAS': 0, 'MATERIAIS DE CONSTRUÇÃO': 0,
@@ -105,16 +87,15 @@ def classificar_auditor(objeto):
 
     return natureza, funcao
 
-# --- CONEXÃO GOOGLE SHEETS ---
-def conectar_google():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    return ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô Financeiro (V5.2)...")
-    novos_dados = []
+    print("🤖 Iniciando Robô GitHub (CSV Local)...")
     
+    # 1. Cria a pasta 'data' se não existir
+    if not os.path.exists(PASTA_DADOS):
+        os.makedirs(PASTA_DADOS)
+
+    novos_dados = []
     modalidades = {"6": "Pregão", "5": "Concorrência", "8": "Dispensa"}
     
     for cod, nome in modalidades.items():
@@ -130,12 +111,7 @@ def executar_robo():
                 
                 for item in itens:
                     nat, func = classificar_auditor(item.get('objetoCompra', ''))
-                    
-                    # APLICA A NOVA LIMPEZA DE DINHEIRO
-                    valor_sujo = item.get('valorTotalEstimado', 0)
-                    valor_limpo = limpar_dinheiro(valor_sujo)
-                    # -------------------------------------
-
+                    valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
                     link = item.get('linkSistemaOrigem', 'N/A')
                     
                     novos_dados.append({
@@ -152,46 +128,35 @@ def executar_robo():
                         "Link": link
                     })
                 pagina += 1
-            except:
-                break
+            except: break
 
     df_novo = pd.DataFrame(novos_dados)
-    
     if df_novo.empty:
         print("💤 Nenhum dado novo.")
         return
 
-    print("☁️ Conectando ao Google Sheets...")
-    try:
-        creds = conectar_google()
-        client = gspread.authorize(creds)
-        sheet = client.open(NOME_PLANILHA_GOOGLE).worksheet(NOME_ABA)
+    # 2. Lógica de "Banco de Dados" CSV
+    print("💾 Processando arquivo CSV...")
+    
+    if os.path.exists(CAMINHO_COMPLETO):
+        # Lê o CSV que já existe no GitHub
+        df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig')
+        df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
+        df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
         
-        dados_antigos = sheet.get_all_records()
-        df_antigo = pd.DataFrame(dados_antigos)
-        
-        if not df_antigo.empty:
-            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
-            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-            df_total = pd.concat([df_antigo, df_novo])
-            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
-        else:
-            df_total = df_novo
+        # Junta e Remove Duplicatas
+        df_total = pd.concat([df_antigo, df_novo])
+        df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+    else:
+        df_total = df_novo
 
-        # Tratamento Final de Erros
-        df_total = df_total.fillna('')
-        df_total = df_total.replace([np.inf, -np.inf], 0)
+    # Limpeza Final
+    df_total = df_total.fillna('')
+    df_total = df_total.replace([np.inf, -np.inf], 0)
 
-        print(f"💾 Salvando {len(df_total)} registros...")
-        sheet.clear()
-        sheet.update(
-            range_name='A1', 
-            values=[df_total.columns.values.tolist()] + df_total.values.tolist()
-        )
-        print(f"✅ SUCESSO! Base atualizada e valores corrigidos.")
-        
-    except Exception as e:
-        print(f"❌ Erro ao salvar: {e}")
+    # 3. Salva o arquivo CSV na pasta data/
+    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig')
+    print(f"✅ Arquivo {NOME_ARQUIVO} atualizado com {len(df_total)} linhas.")
 
 if __name__ == "__main__":
     executar_robo()
