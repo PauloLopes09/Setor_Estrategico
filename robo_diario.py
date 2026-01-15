@@ -88,7 +88,7 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (ISO Date)...")
+    print("🤖 Iniciando Robô GitHub (Modo Preservação de Dados)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -111,13 +111,11 @@ def executar_robo():
                     nat, func = classificar_auditor(item.get('objetoCompra', ''))
                     valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
                     link = item.get('linkSistemaOrigem', 'N/A')
-                    
-                    # Extrai a data bruta (Ex: 2026-01-15T14:00:00)
-                    data_bruta = item.get('dataPublicacaoPncp', '')
+                    data_bruta = item.get('dataPublicacaoPncp', None)
                     
                     novos_dados.append({
                         "ID_Unico": str(link),
-                        "Data": data_bruta, # Mantém bruto por enquanto
+                        "Data": data_bruta, 
                         "Modalidade": nome,
                         "Cidade": item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'),
                         "Órgão": item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'),
@@ -147,20 +145,23 @@ def executar_robo():
     else:
         df_total = df_novo
 
-    # --- TRATAMENTO FINAL (DATA ISO 8601 & LIMPEZA) ---
-    df_total = df_total.fillna('')
+    # --- LÓGICA DE PRESERVAÇÃO ---
+    df_total = df_total.fillna('') # Garante que nada é NaN
     df_total = df_total.replace([np.inf, -np.inf], 0)
 
-    # 1. Converte para datetime real (lida com fuso, T, etc)
-    df_total['Data'] = pd.to_datetime(df_total['Data'], errors='coerce')
+    # 1. Tenta converter Data
+    df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
+
+    # 2. Se a conversão deu certo, formata YYYY-MM-DD. 
+    #    Se deu errado (NaT), fica vazia ("").
+    #    NÃO EXCLUÍMOS A LINHA.
+    df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
     
-    # 2. Força o formato de string YYYY-MM-DD
-    # Isso garante que no CSV fique: 2026-01-15 (sem horário)
-    df_total['Data'] = df_total['Data'].dt.strftime('%Y-%m-%d')
-    # --------------------------------------------------
+    # 3. Remove a coluna temporária
+    df_total = df_total.drop(columns=['Data_Temp'])
 
     df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig')
-    print(f"✅ Arquivo atualizado (Datas Padronizadas): {len(df_total)} linhas.")
+    print(f"✅ Arquivo salvo! Total de registros: {len(df_total)} (incluindo os sem data).")
 
 if __name__ == "__main__":
     executar_robo()
