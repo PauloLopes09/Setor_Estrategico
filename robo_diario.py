@@ -1,21 +1,17 @@
 import requests
 import pandas as pd
-import time
 from datetime import datetime
-import os
-import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- CONFIGURAÇÃO ---
-# Nome EXATO da planilha que criaste no Google
 NOME_PLANILHA_GOOGLE = "Base_Licitacoes_RN" 
 NOME_ABA = "Dados"
 
 # Configurações do Portal Nacional (PNCP)
 BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 ESTADO = "RN"
-DATA_INICIO = "20260101" # Ajuste conforme necessário
+DATA_INICIO = "20260101"
 DATA_FIM = datetime.now().strftime("%Y%m%d")
 
 HEADERS = {
@@ -23,151 +19,120 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- CÉREBRO DE CLASSIFICAÇÃO 3.0 (Versão Especialista) ---
-def definir_area(objeto):
+# --- CÉREBRO: CLASSIFICAÇÃO "AUDITOR" (NATUREZA + FUNÇÃO) ---
+def classificar_auditor(objeto):
     texto = str(objeto).lower()
     
-    # Inicializa pontuação zerada para todas as categorias estratégicas
+    # --- ETAPA 1: DEFINIR A NATUREZA (O TIPO DE GASTO) ---
+    # Padrão: Se não descobrir, assume Aquisição
+    natureza = "AQUISIÇÃO" 
+    
+    if any(x in texto for x in ['contratacao', 'prestacao', 'servico', 'manutencao', 'reparo', 'limpeza', 'locacao de mao', 'apoio', 'assessoria', 'consultoria', 'publicidade', 'gestao']):
+        natureza = "SERVIÇOS"
+    elif any(x in texto for x in ['obra', 'pavimentacao', 'construcao', 'reforma', 'ampliacao', 'drenagem', 'engenharia', 'edificacao', 'muro', 'tapa buraco']):
+        natureza = "OBRAS"
+    elif any(x in texto for x in ['locacao', 'aluguel', 'arrendamento']):
+        # Pegadinha: Locação de mão de obra é serviço, não locação pura
+        if 'mao de obra' in texto or 'motorista' in texto:
+            natureza = "SERVIÇOS"
+        else:
+            natureza = "LOCAÇÃO"
+
+    # --- ETAPA 2: DEFINIR A FUNÇÃO (O SETOR) ---
     scores = {
-        # GRUPO 1: ENGENHARIA E INFRAESTRUTURA
-        'Infraestrutura Urbana (Pavimentação/Drenagem)': 0,
-        'Edificações (Construção e Reformas)': 0,
-        'Serviços de Engenharia (Projetos/Fiscalização)': 0,
-        'Materiais de Construção': 0,
-        'Iluminação Pública': 0,
-
-        # GRUPO 2: SAÚDE
-        'Saúde - Medicamentos': 0,
-        'Saúde - Equipamentos Hospitalares': 0,
-        'Saúde - Serviços Médicos e Exames': 0,
-
-        # GRUPO 3: EDUCAÇÃO
-        'Educação - Transporte Escolar': 0,
-        'Educação - Merenda e Alimentos': 0,
-        'Educação - Material Didático e Uniformes': 0,
-
-        # GRUPO 4: FACILITIES E SERVIÇOS GERAIS
-        'Limpeza Urbana (Lixo e Varrição)': 0,
-        'Limpeza Predial e Conservação': 0,
-        'Vigilância e Segurança Patrimonial': 0,
-        'Locação de Mão de Obra (Terceirização)': 0,
-
-        # GRUPO 5: FROTA E LOGÍSTICA
-        'Frota - Combustíveis': 0,
-        'Frota - Aquisição de Veículos': 0,
-        'Frota - Manutenção e Peças': 0,
-        'Locação de Veículos e Máquinas': 0,
-
-        # GRUPO 6: TECNOLOGIA E ESCRITÓRIO
-        'TI - Equipamentos (Hardware)': 0,
-        'TI - Software e Licenças': 0,
-        'Material de Expediente e Mobiliário': 0,
-
-        # GRUPO 7: ADMINISTRATIVO E OUTROS
-        'Eventos, Palco e Festividades': 0,
-        'Serviços Funerários': 0,
-        'Publicidade e Comunicação': 0,
-        'Consultoria e Assessoria Jurídica': 0,
-        'Outros': 0.1 # Pontuação mínima para servir de padrão
+        'INFRAESTRUTURA URBANA': 0,
+        'EDIFICAÇÕES PÚBLICAS': 0,
+        'MATERIAIS DE CONSTRUÇÃO': 0,
+        'LIMPEZA URBANA': 0,
+        'LIMPEZA E CONSERVAÇÃO PREDIAL': 0,
+        'SAÚDE - MEDICAMENTOS': 0,
+        'SAÚDE - SERVIÇOS/EQUIP': 0,
+        'EDUCAÇÃO - TRANSPORTE': 0,
+        'EDUCAÇÃO - GERAL': 0,
+        'TI E TECNOLOGIA': 0,
+        'FROTA E COMBUSTÍVEL': 0,
+        'LOCAÇÃO DE VEÍCULOS/MÁQUINAS': 0,
+        'SEGURANÇA E VIGILÂNCIA': 0,
+        'AGRICULTURA E MEIO AMBIENTE': 0,
+        'ADMINISTRATIVO E EXPEDIENTE': 0,
+        'EVENTOS E CULTURA': 0,
+        'OUTROS': 0.1
     }
 
-    # --- REGRAS DE PONTUAÇÃO (Algoritmo de Decisão) ---
-
-    # 1. INFRAESTRUTURA E OBRAS
-    if any(x in texto for x in ['pavimentacao', 'asfaltica', 'drenagem', 'terraplanagem', 'saneamento', 'calcamento', 'paralelepipedo', 'ponte', 'viaduto', 'urbanizacao', 'operacao tapa buraco']):
-        scores['Infraestrutura Urbana (Pavimentação/Drenagem)'] += 20
+    # -- Regras de Pontuação (Keywords) --
     
-    if any(x in texto for x in ['construcao de', 'edificacao', 'reforma de escola', 'ampliacao', 'conclusao de obra', 'ubs', 'creche', 'quadra', 'cobertura de', 'muro']):
-        scores['Edificações (Construção e Reformas)'] += 15
+    # Obras e Infra
+    if any(x in texto for x in ['pavimentacao', 'asfalto', 'drenagem', 'saneamento', 'tapa buraco', 'paralelepipedo', 'urbanizacao']): scores['INFRAESTRUTURA URBANA'] += 20
+    if any(x in texto for x in ['construcao', 'reforma', 'ubs', 'creche', 'escola', 'predio', 'muro', 'cobertura']): scores['EDIFICAÇÕES PÚBLICAS'] += 15
+    if any(x in texto for x in ['cimento', 'tijolo', 'areia', 'material de construcao', 'eletrico', 'hidraulico']): scores['MATERIAIS DE CONSTRUÇÃO'] += 10
+    
+    # Limpeza
+    if any(x in texto for x in ['coleta de lixo', 'residuos', 'entulho', 'varricao', 'aterro', 'bota fora']): scores['LIMPEZA URBANA'] += 20
+    if any(x in texto for x in ['limpeza', 'higienizacao', 'zeladoria', 'dedetizacao', 'material de limpeza']): scores['LIMPEZA E CONSERVAÇÃO PREDIAL'] += 10
+    
+    # Saúde
+    if any(x in texto for x in ['medicamento', 'farmacia', 'injetavel', 'soro', 'comprimido']): scores['SAÚDE - MEDICAMENTOS'] += 15
+    if any(x in texto for x in ['hospital', 'medico', 'exame', 'saude', 'enfermagem', 'laboratorial', 'raio-x', 'odontologico']): scores['SAÚDE - SERVIÇOS/EQUIP'] += 10
+    
+    # Educação
+    if any(x in texto for x in ['transporte escolar', 'transporte de alunos', 'transporte universitario']): scores['EDUCAÇÃO - TRANSPORTE'] += 20
+    if any(x in texto for x in ['merenda', 'didatico', 'kit escolar', 'fardamento', 'educacao', 'pedagogico']): scores['EDUCAÇÃO - GERAL'] += 10
+    
+    # TI
+    if any(x in texto for x in ['computador', 'notebook', 'software', 'toner', 'impressora', 'internet', 'site']): scores['TI E TECNOLOGIA'] += 10
+    
+    # Frota
+    if any(x in texto for x in ['combustivel', 'gasolina', 'diesel', 'pneu', 'pecas', 'manutencao veicular']): scores['FROTA E COMBUSTÍVEL'] += 10
+    if any(x in texto for x in ['locacao de veiculo', 'trator', 'retroescavadeira', 'maquinas pesadas', 'automovel']): scores['LOCAÇÃO DE VEÍCULOS/MÁQUINAS'] += 10
+    
+    # Outros
+    if any(x in texto for x in ['vigilancia', 'seguranca', 'monitoramento', 'camera', 'cftv']): scores['SEGURANÇA E VIGILÂNCIA'] += 15
+    if any(x in texto for x in ['papel', 'expediente', 'cafe', 'agua mineral', 'mobiliario', 'mesa', 'juridico', 'contabil']): scores['ADMINISTRATIVO E EXPEDIENTE'] += 10
+    if any(x in texto for x in ['show', 'palco', 'som', 'evento', 'festividade', 'decoracao', 'banda']): scores['EVENTOS E CULTURA'] += 15
+    if any(x in texto for x in ['adubo', 'sementes', 'corte de terra', 'agricola']): scores['AGRICULTURA E MEIO AMBIENTE'] += 15
+
+    # Vencedor da Função
+    funcao = max(scores, key=scores.get)
+    if scores[funcao] < 1: funcao = 'OUTROS'
+
+    # --- ETAPA 3: REGRAS DE OURO (CORREÇÕES FINAIS) ---
+    
+    # 1. Caminhão de Lixo é sempre SERVIÇO de LIMPEZA URBANA
+    if 'caminhao de lixo' in texto or 'compactador' in texto:
+        natureza = "SERVIÇOS"
+        funcao = "LIMPEZA URBANA"
         
-    if any(x in texto for x in ['elaboracao de projeto', 'fiscalizacao de obra', 'servico de engenharia', 'topografia', 'georreferenciamento', 'laudo tecnico']):
-        scores['Serviços de Engenharia (Projetos/Fiscalização)'] += 15
+    # 2. Transporte Escolar é sempre SERVIÇO
+    if 'transporte escolar' in texto or 'transporte de alunos' in texto:
+        natureza = "SERVIÇOS"
+        funcao = "EDUCAÇÃO - TRANSPORTE"
+        
+    # 3. Pavimentação é sempre OBRA
+    if 'pavimentacao' in texto or 'paralelepipedo' in texto:
+        natureza = "OBRAS"
+        funcao = "INFRAESTRUTURA URBANA"
 
-    if any(x in texto for x in ['iluminacao publica', 'lampada led', 'luminaria', 'poste', 'material eletrico', 'manutencao eletrica']):
-        scores['Iluminação Pública'] += 10
+    # 4. Licença de Software é AQUISIÇÃO (compra de licença)
+    if 'licenca' in texto and 'software' in texto:
+        natureza = "AQUISIÇÃO"
+        funcao = "TI E TECNOLOGIA"
+        
+    # 5. Combustível é AQUISIÇÃO
+    if funcao == 'FROTA E COMBUSTÍVEL' and 'combustivel' in texto:
+        natureza = "AQUISIÇÃO"
 
-    if any(x in texto for x in ['cimento', 'tijolo', 'areia', 'brita', 'argamassa', 'ferragens', 'madeira', 'telha', 'material de construcao', 'hidraulico']):
-        scores['Materiais de Construção'] += 10
-
-    # 2. LIMPEZA E RESÍDUOS
-    if any(x in texto for x in ['coleta de lixo', 'residuos solidos', 'aterro sanitario', 'transbordo', 'entulho', 'podas', 'capina urbana']):
-        scores['Limpeza Urbana (Lixo e Varrição)'] += 20
-    
-    if any(x in texto for x in ['servico de limpeza', 'higienizacao', 'material de limpeza', 'copeira', 'zeladoria', 'dedetizacao', 'limpeza de caixa d', 'higiene']):
-        scores['Limpeza Predial e Conservação'] += 10
-
-    # 3. SEGURANÇA E TERCEIRIZAÇÃO
-    if any(x in texto for x in ['vigilancia', 'seguranca desarmada', 'monitoramento', 'cameras', 'cftv', 'guarda municipal', 'alarme']):
-        scores['Vigilância e Segurança Patrimonial'] += 15
-    
-    if any(x in texto for x in ['locacao de mao de obra', 'recepcionista', 'porteiro', 'apoio administrativo', 'motorista', 'terceirizacao']):
-        scores['Locação de Mão de Obra (Terceirização)'] += 10
-
-    # 4. SAÚDE
-    if any(x in texto for x in ['medicamento', 'farmacia', 'farmacologico', 'insumo hospitalar', 'material medico', 'penso']):
-        scores['Saúde - Medicamentos'] += 10
-    if any(x in texto for x in ['equipamento hospitalar', 'raio-x', 'odontologico', 'cadeira de rodas', 'maca']):
-        scores['Saúde - Equipamentos Hospitalares'] += 10
-    if any(x in texto for x in ['plantao medico', 'servico medico', 'exames', 'laboratorial', 'ultrassonografia', 'enfermagem', 'consultas']):
-        scores['Saúde - Serviços Médicos e Exames'] += 10
-
-    # 5. EDUCAÇÃO
-    if any(x in texto for x in ['transporte escolar', 'transporte de alunos', 'transporte universitario']):
-        scores['Educação - Transporte Escolar'] += 20 
-    
-    if any(x in texto for x in ['merenda', 'alimentacao escolar', 'nutricional', 'generos alimenticios', 'hortifruti']):
-        scores['Educação - Merenda e Alimentos'] += 10
-    
-    if any(x in texto for x in ['material didatico', 'kit escolar', 'fardamento', 'uniforme', 'mochila', 'livro']):
-        scores['Educação - Material Didático e Uniformes'] += 10
-
-    # 6. FROTA
-    if any(x in texto for x in ['combustivel', 'gasolina', 'diesel', 'etanol', 'abastecimento']):
-        scores['Frota - Combustíveis'] += 15
-    if any(x in texto for x in ['aquisicao de veiculo', 'ambulancia', 'caminhao', 'onibus', 'motocicleta']):
-        scores['Frota - Aquisição de Veículos'] += 10
-    if any(x in texto for x in ['pecas', 'pneus', 'lubrificante', 'manutencao veicular', 'oficina mecanica']):
-        scores['Frota - Manutenção e Peças'] += 10
-    if any(x in texto for x in ['locacao de veiculo', 'locacao de caminhao', 'maquinas pesadas', 'trator', 'retroescavadeira', 'motoniveladora']):
-        scores['Locação de Veículos e Máquinas'] += 10
-
-    # 7. TI e ESCRITÓRIO
-    if any(x in texto for x in ['computador', 'notebook', 'servidor', 'nobreak', 'tablet']):
-        scores['TI - Equipamentos (Hardware)'] += 10
-    if any(x in texto for x in ['software', 'licenca', 'sistema', 'site', 'hospedagem', 'internet']):
-        scores['TI - Software e Licenças'] += 10
-    if any(x in texto for x in ['papel a4', 'expediente', 'caneta', 'toner', 'cartucho', 'mesa', 'cadeira', 'arquivo', 'mobiliario']):
-        scores['Material de Expediente e Mobiliário'] += 10
-
-    # 8. OUTROS ESPECÍFICOS
-    if any(x in texto for x in ['show', 'palco', 'som', 'iluminacao', 'festividade', 'banda', 'evento']):
-        scores['Eventos, Palco e Festividades'] += 10
-    if any(x in texto for x in ['urna', 'ataude', 'translado', 'funerario']):
-        scores['Serviços Funerários'] += 15
-    if any(x in texto for x in ['publicidade', 'propaganda', 'divulgacao', 'diario oficial', 'radio', 'midia']):
-        scores['Publicidade e Comunicação'] += 15
-    if any(x in texto for x in ['consultoria', 'assessoria', 'juridica', 'contabil', 'treinamento']):
-        scores['Consultoria e Assessoria Jurídica'] += 10
-
-    # DESEMPATE MATEMÁTICO
-    vencedor = max(scores, key=scores.get)
-    if scores[vencedor] < 1:
-        return 'Outros'
-    else:
-        return vencedor
+    return natureza, funcao
 
 # --- CONEXÃO GOOGLE SHEETS ---
 def conectar_google():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # O arquivo credentials.json é criado pelo GitHub Actions
     return ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô Setor Estratégico (V3.0)...")
+    print("🤖 Iniciando Robô Auditor (V5.0)...")
     novos_dados = []
     
-    # IDs de modalidade PNCP: 6=Pregão, 5=Concorrência, 8=Dispensa
     modalidades = {"6": "Pregão", "5": "Concorrência", "8": "Dispensa"}
     
     for cod, nome in modalidades.items():
@@ -181,18 +146,15 @@ def executar_robo():
                 if resp.status_code != 200: break
                 
                 itens = resp.json().get('data', [])
-                if not itens: break # Fim das páginas
+                if not itens: break 
                 
                 for item in itens:
-                    # Classificação Inteligente
-                    area = definir_area(item.get('objetoCompra', ''))
+                    # APLICA A INTELIGÊNCIA DO AUDITOR
+                    nat, func = classificar_auditor(item.get('objetoCompra', ''))
                     
-                    # Tratamento de Valores
                     val = item.get('valorTotalEstimado', 0)
-                    try:
-                        valor_final = float(val)
-                    except:
-                        valor_final = 0.0
+                    try: valor_final = float(val)
+                    except: valor_final = 0.0
                     
                     link = item.get('linkSistemaOrigem', 'N/A')
                     
@@ -202,7 +164,13 @@ def executar_robo():
                         "Modalidade": nome,
                         "Cidade": item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'),
                         "Órgão": item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'),
-                        "Area": area,
+                        
+                        # --- NOVAS COLUNAS DO AUDITOR ---
+                        "Natureza": nat,       # Ex: SERVIÇOS
+                        "Função": func,        # Ex: EDUCAÇÃO - TRANSPORTE
+                        "Categoria_Final": f"{nat} - {func}", # Ex: SERVIÇOS - EDUCAÇÃO...
+                        # -------------------------------
+                        
                         "Objeto": item.get('objetoCompra', 'Sem descrição'),
                         "Valor": valor_final,
                         "Link": link
@@ -216,44 +184,36 @@ def executar_robo():
     df_novo = pd.DataFrame(novos_dados)
     
     if df_novo.empty:
-        print("💤 Nenhum dado novo encontrado nesta execução.")
+        print("💤 Nenhum dado novo.")
         return
 
-    # Salva no Google Sheets
     print("☁️ Conectando ao Google Sheets...")
     try:
         creds = conectar_google()
         client = gspread.authorize(creds)
         sheet = client.open(NOME_PLANILHA_GOOGLE).worksheet(NOME_ABA)
         
-        # 1. Recupera base antiga
         dados_antigos = sheet.get_all_records()
         df_antigo = pd.DataFrame(dados_antigos)
         
-        # 2. Consolidação (Anti-Duplicidade)
         if not df_antigo.empty:
             df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
             df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-            
             df_total = pd.concat([df_antigo, df_novo])
             df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
         else:
             df_total = df_novo
 
-        # 3. Upload Seguro
-        print(f"💾 Salvando {len(df_total)} registros na nuvem...")
+        print(f"💾 Salvando {len(df_total)} registros...")
         sheet.clear()
-        
-        # Método compatível com gspread atualizado
         sheet.update(
             range_name='A1', 
             values=[df_total.columns.values.tolist()] + df_total.values.tolist()
         )
-        
-        print(f"✅ SUCESSO! Base atualizada e categorizada.")
+        print(f"✅ SUCESSO! Auditoria concluída.")
         
     except Exception as e:
-        print(f"❌ Erro Crítico ao salvar no Google: {e}")
+        print(f"❌ Erro ao salvar: {e}")
 
 if __name__ == "__main__":
     executar_robo()
