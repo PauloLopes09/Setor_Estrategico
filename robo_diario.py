@@ -136,5 +136,56 @@ def executar_robo():
                     })
                 pagina += 1
             except: break
+    
+    # --- CORREÇÃO DO ERRO AQUI EMBAIXO ---
+    df_novo = pd.DataFrame(novos_dados)
+    
+    if df_novo.empty: 
+        print("💤 Nenhum dado novo.")
+        return
 
-    df_novo =
+    print("💾 Processando Base Completa...")
+
+    # --- 1. GERA O ARQUIVO COMPLETO ---
+    df_total = df_novo
+    if os.path.exists(CAMINHO_COMPLETO):
+        try:
+            # Tenta ler com configurações flexíveis
+            df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
+            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
+            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
+            df_total = pd.concat([df_antigo, df_novo])
+            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+        except:
+            df_total = df_novo
+
+    # Limpeza Final e Datas
+    df_total = df_total.fillna('')
+    df_total = df_total.replace([np.inf, -np.inf], 0)
+    df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
+    df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
+    df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
+    
+    # SALVA O COMPLETO (Com Quoting Padrão)
+    df_total.drop(columns=['Data_Temp'], inplace=True, errors='ignore')
+    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
+    print(f"✅ Histórico Completo Atualizado: {len(df_total)} linhas.")
+
+    # --- 2. GERA O ARQUIVO VISUAL ---
+    print("💎 Gerando arquivo Visual...")
+    
+    df_visual = df_total.copy()
+    df_visual['Data_Filtro'] = pd.to_datetime(df_visual['Data'], errors='coerce')
+    data_corte = datetime.now() - timedelta(days=30)
+    df_visual = df_visual[df_visual['Data_Filtro'] >= data_corte]
+    df_visual = df_visual.drop(columns=['Data_Filtro'])
+    
+    if len(df_visual) > 2000:
+        df_visual = df_visual.tail(2000)
+
+    # SALVA O VISUAL (Com Quoting Padrão)
+    df_visual.to_csv(CAMINHO_VISUAL, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
+    print(f"✅ Arquivo Visual Atualizado: {len(df_visual)} linhas.")
+
+if __name__ == "__main__":
+    executar_robo()
