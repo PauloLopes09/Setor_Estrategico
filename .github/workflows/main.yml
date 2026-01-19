@@ -2,9 +2,10 @@ name: Robo Setor Estrategico
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *' # Roda a cada hora
+  workflow_dispatch: # Permite rodar manualmente no botão
 
+# Permissão para o robô escrever no repositório
 permissions:
   contents: write
 
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar código
+      - name: Baixar código do repositório
         uses: actions/checkout@v3
 
       - name: Instalar Python
@@ -31,6 +32,11 @@ jobs:
         run: |
           git config --global user.name 'Robo Licitacao'
           git config --global user.email 'robo@noreply.github.com'
-          git add data/licitacoes_rn.csv
-          git commit -m "Update Automatico" || echo "Sem mudanças"
+          
+          # Adiciona os arquivos novos gerados pelo Python
+          git add data/licitacoes_rn_COMPLETO.csv
+          git add data/licitacoes_rn_VISUALIZACAO.csv
+          
+          # Faz o commit apenas se houver mudanças
+          git commit -m "Update: Base Completa + Visualizacao" || echo "Nenhuma mudança para salvar"
           git push
