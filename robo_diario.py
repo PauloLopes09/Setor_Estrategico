@@ -10,7 +10,7 @@ PASTA_DADOS = "data"
 NOME_ARQUIVO = "licitacoes_rn.csv"
 CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO)
 
-# Configurações do Portal Nacional (PNCP)
+# Portal Nacional (PNCP)
 BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 ESTADO = "RN"
 DATA_INICIO = "20260101"
@@ -21,7 +21,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- FUNÇÃO DE LIMPEZA FINANCEIRA ---
+# --- 1. LIMPEZA FINANCEIRA ---
 def limpar_dinheiro(valor_bruto):
     if valor_bruto is None: return 0.0
     if isinstance(valor_bruto, (int, float)): return float(valor_bruto)
@@ -35,29 +35,30 @@ def limpar_dinheiro(valor_bruto):
     except:
         return 0.0
 
-# --- FUNÇÃO BLINDADA DE LIMPEZA DE TEXTO ---
-def limpar_texto_csv(texto):
+# --- 2. LIMPEZA DE TEXTO (A SOLUÇÃO DO ERRO) ---
+def limpar_texto_absoluto(texto):
     """
-    Remove todos os caracteres que confundem o GitHub/CSV
+    Remove QUALQUER caractere que possa quebrar o CSV.
     """
     if texto is None: return ""
     txt = str(texto)
     
-    # 1. Remove Quebras de Linha (O culpado nº 1 pelo erro de linhas)
+    # Remove Quebras de Linha (O maior vilão)
     txt = txt.replace('\n', ' ').replace('\r', ' ')
     
-    # 2. Remove Ponto e Vírgula (O culpado nº 1 pelo erro de colunas)
+    # Troca o separador (;) por vírgula (,)
     txt = txt.replace(';', ',') 
     
-    # 3. Remove Aspas (Para evitar erro de quoting)
+    # Remove Aspas (evita confusão de colunas)
     txt = txt.replace('"', '').replace("'", "")
     
-    # 4. Remove Tabs e espaços duplos
+    # Remove Tabs
     txt = txt.replace('\t', ' ')
     
-    return txt.strip()
+    # Remove espaços duplos
+    return " ".join(txt.split())
 
-# --- CÉREBRO: CLASSIFICAÇÃO AUDITOR ---
+# --- 3. CLASSIFICAÇÃO AUDITOR ---
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
     natureza = "AQUISIÇÃO" 
@@ -101,7 +102,7 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo Clean Structure)...")
+    print("🤖 Iniciando Robô GitHub (Modo Estrutura Perfeita)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -126,22 +127,18 @@ def executar_robo():
                     link = item.get('linkSistemaOrigem', 'N/A')
                     data_bruta = item.get('dataPublicacaoPncp', None)
                     
-                    # --- APLICA A LIMPEZA BLINDADA ---
-                    objeto_limpo = limpar_texto_csv(item.get('objetoCompra', 'Sem descrição'))
-                    orgao_limpo = limpar_texto_csv(item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'))
-                    cidade_limpa = limpar_texto_csv(item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'))
-                    mod_limpa = limpar_texto_csv(nome)
-                    
+                    # --- APLICA A LIMPEZA ABSOLUTA EM TUDO ---
+                    # Garantia de que NENHUM campo vai quebrar o CSV
                     novos_dados.append({
                         "ID_Unico": str(link),
                         "Data": data_bruta, 
-                        "Modalidade": mod_limpa,
-                        "Cidade": cidade_limpa,
-                        "Órgão": orgao_limpo,
+                        "Modalidade": limpar_texto_absoluto(nome),
+                        "Cidade": limpar_texto_absoluto(item.get('unidadeOrgao', {}).get('municipioNome', 'N/A')),
+                        "Órgão": limpar_texto_absoluto(item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A')),
                         "Natureza": nat,
                         "Função": func,
                         "Categoria_Final": f"{nat} - {func}",
-                        "Objeto": objeto_limpo,
+                        "Objeto": limpar_texto_absoluto(item.get('objetoCompra', 'Sem descrição')),
                         "Valor": valor_limpo,
                         "Link": link
                     })
@@ -149,38 +146,44 @@ def executar_robo():
             except: break
 
     df_novo = pd.DataFrame(novos_dados)
-    if df_novo.empty: return
+    
+    # Se não baixou nada, para por aqui
+    if df_novo.empty: 
+        print("💤 Nenhum dado novo encontrado.")
+        return
 
     print("💾 Processando arquivo CSV...")
-    
-    # Se o arquivo existe e está corrompido, o Pandas pode falhar ao ler.
-    # Se falhar, assumimos que é melhor criar um novo do zero.
+
+    # Tenta ler o antigo (se existir e não estiver corrompido)
     df_total = df_novo
     if os.path.exists(CAMINHO_COMPLETO):
         try:
-            df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
+            # on_bad_lines='skip' pula linhas estragadas do arquivo velho (se houver)
+            df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
             df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
             df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
             df_total = pd.concat([df_antigo, df_novo])
             df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
         except:
-            print("⚠️ Arquivo antigo ilegível. Criando nova base limpa.")
+            print("⚠️ Arquivo antigo estava muito corrompido. Substituindo por base nova limpa.")
             df_total = df_novo
 
-    # Limpeza Final de Nulos e Datas
+    # --- TRATAMENTO FINAL ---
     df_total = df_total.fillna('')
     df_total = df_total.replace([np.inf, -np.inf], 0)
     
+    # Datas
     df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
     df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
     df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
     df_total = df_total.drop(columns=['Data_Temp'])
 
-    # SALVA COM ESTRUTURA RÍGIDA
-    # quoting=csv.QUOTE_NONE força o CSV a ser texto puro, sem aspas, separado por ;
-    # Como já limpamos os ; do texto, isso cria um arquivo perfeito.
+    # --- SALVAMENTO BLINDADO ---
+    # quoting=csv.QUOTE_NONE: Não usa aspas para separar colunas.
+    # Como limpamos todos os ; do texto, o arquivo fica perfeito: ColunaA;ColunaB;ColunaC
     df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
-    print(f"✅ Arquivo salvo e estruturado: {len(df_total)} linhas.")
+    
+    print(f"✅ Arquivo salvo (Estrutura CSV Limpa): {len(df_total)} linhas.")
 
 if __name__ == "__main__":
     executar_robo()
