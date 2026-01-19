@@ -21,7 +21,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- 1. LIMPEZA FINANCEIRA ---
+# --- FUNÇÕES DE LIMPEZA ---
 def limpar_dinheiro(valor_bruto):
     if valor_bruto is None: return 0.0
     if isinstance(valor_bruto, (int, float)): return float(valor_bruto)
@@ -32,33 +32,18 @@ def limpar_dinheiro(valor_bruto):
         if ',' in texto:
             texto = texto.replace('.', '').replace(',', '.')
         return float(texto)
-    except:
-        return 0.0
+    except: return 0.0
 
-# --- 2. LIMPEZA DE TEXTO (A SOLUÇÃO DO ERRO) ---
 def limpar_texto_absoluto(texto):
-    """
-    Remove QUALQUER caractere que possa quebrar o CSV.
-    """
     if texto is None: return ""
     txt = str(texto)
-    
-    # Remove Quebras de Linha (O maior vilão)
     txt = txt.replace('\n', ' ').replace('\r', ' ')
-    
-    # Troca o separador (;) por vírgula (,)
     txt = txt.replace(';', ',') 
-    
-    # Remove Aspas (evita confusão de colunas)
     txt = txt.replace('"', '').replace("'", "")
-    
-    # Remove Tabs
     txt = txt.replace('\t', ' ')
-    
-    # Remove espaços duplos
     return " ".join(txt.split())
 
-# --- 3. CLASSIFICAÇÃO AUDITOR ---
+# --- CLASSIFICAÇÃO AUDITOR ---
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
     natureza = "AQUISIÇÃO" 
@@ -102,7 +87,7 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo Estrutura Perfeita)...")
+    print("🤖 Iniciando Robô GitHub (Modo Auditoria: Nunca Excluir)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -113,77 +98,94 @@ def executar_robo():
     for cod, nome in modalidades.items():
         print(f"   > Buscando {nome}...")
         pagina = 1
+        
         while True:
             try:
                 url = f"{BASE_URL}?dataInicial={DATA_INICIO}&dataFinal={DATA_FIM}&codigoModalidadeContratacao={cod}&uf={ESTADO}&pagina={pagina}"
-                resp = requests.get(url, headers=HEADERS, timeout=10)
+                resp = requests.get(url, headers=HEADERS, timeout=15)
+                
                 if resp.status_code != 200: break
+                
                 itens = resp.json().get('data', [])
                 if not itens: break 
                 
                 for item in itens:
-                    nat, func = classificar_auditor(item.get('objetoCompra', ''))
-                    valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
-                    link = item.get('linkSistemaOrigem', 'N/A')
-                    data_bruta = item.get('dataPublicacaoPncp', None)
-                    
-                    # --- APLICA A LIMPEZA ABSOLUTA EM TUDO ---
-                    # Garantia de que NENHUM campo vai quebrar o CSV
-                    novos_dados.append({
-                        "ID_Unico": str(link),
-                        "Data": data_bruta, 
-                        "Modalidade": limpar_texto_absoluto(nome),
-                        "Cidade": limpar_texto_absoluto(item.get('unidadeOrgao', {}).get('municipioNome', 'N/A')),
-                        "Órgão": limpar_texto_absoluto(item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A')),
-                        "Natureza": nat,
-                        "Função": func,
-                        "Categoria_Final": f"{nat} - {func}",
-                        "Objeto": limpar_texto_absoluto(item.get('objetoCompra', 'Sem descrição')),
-                        "Valor": valor_limpo,
-                        "Link": link
-                    })
+                    try:
+                        nat, func = classificar_auditor(item.get('objetoCompra', ''))
+                        valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
+                        
+                        link = item.get('linkSistemaOrigem', 'N/A')
+                        data_bruta = item.get('dataPublicacaoPncp', None)
+                        
+                        novos_dados.append({
+                            "Data": data_bruta, 
+                            "Modalidade": limpar_texto_absoluto(nome),
+                            "Cidade": limpar_texto_absoluto(item.get('unidadeOrgao', {}).get('municipioNome', 'N/A')),
+                            "Órgão": limpar_texto_absoluto(item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A')),
+                            "Natureza": nat,
+                            "Função": func,
+                            "Categoria_Final": f"{nat} - {func}",
+                            "Objeto": limpar_texto_absoluto(item.get('objetoCompra', 'Sem descrição')),
+                            "Valor": valor_limpo,
+                            "Link": link
+                        })
+                    except: continue
+
                 pagina += 1
             except: break
 
     df_novo = pd.DataFrame(novos_dados)
     
-    # Se não baixou nada, para por aqui
     if df_novo.empty: 
         print("💤 Nenhum dado novo encontrado.")
+        # Mesmo se não achar nada novo, não faz nada com o arquivo velho.
         return
 
     print("💾 Processando arquivo CSV...")
 
-    # Tenta ler o antigo (se existir e não estiver corrompido)
     df_total = df_novo
+    
+    # Carrega base antiga
     if os.path.exists(CAMINHO_COMPLETO):
         try:
-            # on_bad_lines='skip' pula linhas estragadas do arquivo velho (se houver)
             df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
-            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
+            
+            # Remove a coluna de auditoria antiga para recalcular (opcional, mas mantém limpo)
+            if 'Status_Duplicidade' in df_antigo.columns:
+                df_antigo = df_antigo.drop(columns=['Status_Duplicidade'])
+                
             df_total = pd.concat([df_antigo, df_novo])
-            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
         except:
-            print("⚠️ Arquivo antigo estava muito corrompido. Substituindo por base nova limpa.")
             df_total = df_novo
 
     # --- TRATAMENTO FINAL ---
     df_total = df_total.fillna('')
     df_total = df_total.replace([np.inf, -np.inf], 0)
     
-    # Datas
+    # Tratamento Data
     df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
     df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
     df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
+    
+    # Ordena por Data para que os mais antigos fiquem primeiro
+    df_total = df_total.sort_values(by=['Data_Temp'], ascending=True)
     df_total = df_total.drop(columns=['Data_Temp'])
 
-    # --- SALVAMENTO BLINDADO ---
-    # quoting=csv.QUOTE_NONE: Não usa aspas para separar colunas.
-    # Como limpamos todos os ; do texto, o arquivo fica perfeito: ColunaA;ColunaB;ColunaC
+    # --- MECANISMO DE AVISO DE DUPLICIDADE (SEM EXCLUIR) ---
+    # Critério: Se Link, Objeto, Valor e Órgão forem iguais, é repetido.
+    # keep='first' -> O primeiro que aparece é False (não duplicado), os próximos são True (duplicados)
+    duplicatas = df_total.duplicated(subset=['Link', 'Objeto', 'Valor', 'Órgão'], keep='first')
+    
+    # Cria a coluna de Aviso
+    df_total['Status_Duplicidade'] = np.where(duplicatas, 'REPETIDO', 'ORIGINAL')
+
+    # Conta para o log
+    qtd_repetidos = len(df_total[df_total['Status_Duplicidade'] == 'REPETIDO'])
+    
     df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
     
-    print(f"✅ Arquivo salvo (Estrutura CSV Limpa): {len(df_total)} linhas.")
+    print(f"✅ Arquivo salvo! Total: {len(df_total)} linhas.")
+    print(f"⚠️ Atenção: {qtd_repetidos} registros foram marcados como REPETIDO (mas mantidos no arquivo).")
 
 if __name__ == "__main__":
     executar_robo()
