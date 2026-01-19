@@ -5,6 +5,9 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,11 +24,13 @@ jobs:
       - name: Instalar Bibliotecas
         run: pip install -r requirements.txt
 
-      - name: Criar Credenciais do Google
-        # Recupera a senha secreta que guardamos lá no início
-        env:
-          GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDS }}
-        run: echo "$GDRIVE_CREDS" > credentials.json
-
       - name: Rodar o Robô
         run: python robo_diario.py
+
+      - name: Salvar Dados no GitHub
+        run: |
+          git config --global user.name 'Robo Licitacao'
+          git config --global user.email 'robo@noreply.github.com'
+          git add data/licitacoes_rn.csv
+          git commit -m "Update Automatico" || echo "Sem mudanças"
+          git push
