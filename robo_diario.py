@@ -8,11 +8,10 @@ import csv
 # --- CONFIGURAÇÃO ---
 PASTA_DADOS = "data"
 
-# ARQUIVO 1: O "Gigante" para o Power BI (Histórico Infinito)
+# ARQUIVOS
 NOME_ARQUIVO_COMPLETO = "licitacoes_rn_COMPLETO.csv"
 CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO_COMPLETO)
 
-# ARQUIVO 2: O "Bonito" para o Humano (Apenas mês atual/recente)
 NOME_ARQUIVO_VISUAL = "licitacoes_rn_VISUALIZACAO.csv"
 CAMINHO_VISUAL = os.path.join(PASTA_DADOS, NOME_ARQUIVO_VISUAL)
 
@@ -27,7 +26,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- FUNÇÕES DE LIMPEZA (MANTIDAS DA VERSÃO ANTERIOR) ---
+# --- FUNÇÕES DE LIMPEZA ---
 def limpar_dinheiro(valor_bruto):
     if valor_bruto is None: return 0.0
     if isinstance(valor_bruto, (int, float)): return float(valor_bruto)
@@ -42,12 +41,16 @@ def limpar_dinheiro(valor_bruto):
         return 0.0
 
 def limpar_texto_absoluto(texto):
+    """
+    Limpa o texto, mas mantém compatibilidade com CSV padrão
+    """
     if texto is None: return ""
     txt = str(texto)
+    # Remove apenas quebras de linha que destroem o CSV
     txt = txt.replace('\n', ' ').replace('\r', ' ')
-    txt = txt.replace(';', ',') 
-    txt = txt.replace('"', '').replace("'", "")
+    # Remove tabs
     txt = txt.replace('\t', ' ')
+    # Remove espaços duplos
     return " ".join(txt.split())
 
 def classificar_auditor(objeto):
@@ -93,7 +96,7 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo Twin Files)...")
+    print("🤖 Iniciando Robô GitHub (Modo CSV Padrão Seguro)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -134,62 +137,4 @@ def executar_robo():
                 pagina += 1
             except: break
 
-    df_novo = pd.DataFrame(novos_dados)
-    if df_novo.empty: 
-        print("💤 Nenhum dado novo.")
-        return
-
-    print("💾 Processando Base Completa...")
-
-    # --- 1. GERA O ARQUIVO COMPLETO (BASE DE DADOS) ---
-    df_total = df_novo
-    if os.path.exists(CAMINHO_COMPLETO):
-        try:
-            df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
-            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
-            df_total = pd.concat([df_antigo, df_novo])
-            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
-        except:
-            df_total = df_novo
-
-    # Limpeza Final e Datas
-    df_total = df_total.fillna('')
-    df_total = df_total.replace([np.inf, -np.inf], 0)
-    df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
-    df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
-    df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
-    
-    # SALVA O COMPLETO (Pode ser grande)
-    df_total.drop(columns=['Data_Temp'], inplace=True, errors='ignore')
-    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
-    print(f"✅ Histórico Completo Atualizado: {len(df_total)} linhas.")
-
-    # --- 2. GERA O ARQUIVO VISUAL (APENAS ÚLTIMOS 30 DIAS) ---
-    print("💎 Gerando arquivo Visual...")
-    
-    # Cria uma cópia para não alterar o original
-    df_visual = df_total.copy()
-    
-    # Converte data para filtrar
-    df_visual['Data_Filtro'] = pd.to_datetime(df_visual['Data'], errors='coerce')
-    
-    # Define data de corte (30 dias atrás)
-    data_corte = datetime.now() - timedelta(days=30)
-    
-    # Filtra: Apenas datas válidas E que sejam recentes
-    df_visual = df_visual[df_visual['Data_Filtro'] >= data_corte]
-    
-    # Remove a coluna auxiliar
-    df_visual = df_visual.drop(columns=['Data_Filtro'])
-    
-    # Se ficar muito grande mesmo assim, pega só as últimas 2000 linhas
-    if len(df_visual) > 2000:
-        df_visual = df_visual.tail(2000)
-
-    # SALVA O VISUAL (Pequeno e Bonito)
-    df_visual.to_csv(CAMINHO_VISUAL, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
-    print(f"✅ Arquivo Visual Atualizado: {len(df_visual)} linhas (Recentes).")
-
-if __name__ == "__main__":
-    executar_robo()
+    df_novo =
