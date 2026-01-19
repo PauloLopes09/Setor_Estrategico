@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import os
 import numpy as np
+import csv # Importante para configurações avançadas de CSV
 
 # --- CONFIGURAÇÃO ---
 PASTA_DADOS = "data"
@@ -34,6 +35,25 @@ def limpar_dinheiro(valor_bruto):
     except:
         return 0.0
 
+# --- NOVA FUNÇÃO: VASSOURA DE TEXTO (CORRIGE O ILLEGAL QUOTING) ---
+def limpar_texto_csv(texto):
+    """
+    Remove caracteres que quebram o CSV: ; " e quebras de linha
+    """
+    if texto is None: return ""
+    txt = str(texto).strip()
+    
+    # 1. Remove quebras de linha (enter)
+    txt = txt.replace('\n', ' ').replace('\r', '')
+    
+    # 2. Troca ponto e vírgula por vírgula (pois usamos ; como separador)
+    txt = txt.replace(';', ',')
+    
+    # 3. Troca aspas duplas por simples (evita erro de quoting)
+    txt = txt.replace('"', "'")
+    
+    return txt
+
 # --- CÉREBRO: CLASSIFICAÇÃO AUDITOR ---
 def classificar_auditor(objeto):
     texto = str(objeto).lower()
@@ -57,9 +77,8 @@ def classificar_auditor(objeto):
         'ADMINISTRATIVO E EXPEDIENTE': 0, 'EVENTOS E CULTURA': 0,
         'OUTROS': 0.1
     }
-    
-    # (Mantivemos a lógica completa de pontuação aqui para economizar espaço visual, 
-    #  mas imagine que todo aquele bloco de IFs está aqui igual à versão anterior)
+
+    # (Lógica de pontuação mantida)
     if any(x in texto for x in ['pavimentacao', 'asfalto', 'drenagem']): scores['INFRAESTRUTURA URBANA'] += 20
     if any(x in texto for x in ['construcao', 'reforma', 'predio']): scores['EDIFICAÇÕES PÚBLICAS'] += 15
     if any(x in texto for x in ['medicamento', 'farmacia']): scores['SAÚDE - MEDICAMENTOS'] += 15
@@ -67,11 +86,11 @@ def classificar_auditor(objeto):
     if any(x in texto for x in ['computador', 'notebook']): scores['TI E TECNOLOGIA'] += 10
     if any(x in texto for x in ['combustivel', 'diesel']): scores['FROTA E COMBUSTÍVEL'] += 10
     if any(x in texto for x in ['coleta de lixo']): scores['LIMPEZA URBANA'] += 20
+    if any(x in texto for x in ['show', 'palco']): scores['EVENTOS E CULTURA'] += 15
 
     funcao = max(scores, key=scores.get)
     if scores[funcao] < 1: funcao = 'OUTROS'
 
-    # Desempates Rápidos
     if 'caminhao de lixo' in texto: natureza, funcao = "SERVIÇOS", "LIMPEZA URBANA"
     if 'transporte escolar' in texto: natureza, funcao = "SERVIÇOS", "EDUCAÇÃO - TRANSPORTE"
     if 'pavimentacao' in texto: natureza, funcao = "OBRAS", "INFRAESTRUTURA URBANA"
@@ -80,7 +99,7 @@ def classificar_auditor(objeto):
 
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo Arquivo Fixo)...")
+    print("🤖 Iniciando Robô GitHub (Modo Limpeza de Texto)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -100,21 +119,27 @@ def executar_robo():
                 if not itens: break 
                 
                 for item in itens:
+                    # CLASSIFICA
                     nat, func = classificar_auditor(item.get('objetoCompra', ''))
                     valor_limpo = limpar_dinheiro(item.get('valorTotalEstimado', 0))
                     link = item.get('linkSistemaOrigem', 'N/A')
                     data_bruta = item.get('dataPublicacaoPncp', None)
                     
+                    # LIMPA OS TEXTOS (AQUI ESTÁ A CORREÇÃO DO ERRO)
+                    objeto_limpo = limpar_texto_csv(item.get('objetoCompra', 'Sem descrição'))
+                    orgao_limpo = limpar_texto_csv(item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'))
+                    cidade_limpa = limpar_texto_csv(item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'))
+
                     novos_dados.append({
                         "ID_Unico": str(link),
                         "Data": data_bruta, 
                         "Modalidade": nome,
-                        "Cidade": item.get('unidadeOrgao', {}).get('municipioNome', 'N/A'),
-                        "Órgão": item.get('orgaoEntidade', {}).get('razaoSocial', 'N/A'),
+                        "Cidade": cidade_limpa,
+                        "Órgão": orgao_limpo,
                         "Natureza": nat,
                         "Função": func,
                         "Categoria_Final": f"{nat} - {func}",
-                        "Objeto": item.get('objetoCompra', 'Sem descrição'),
+                        "Objeto": objeto_limpo,
                         "Valor": valor_limpo,
                         "Link": link
                     })
@@ -126,16 +151,22 @@ def executar_robo():
 
     print("💾 Processando arquivo CSV...")
     
+    # Carrega arquivo existente
     if os.path.exists(CAMINHO_COMPLETO):
-        df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig')
-        df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
-        df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
-        df_total = pd.concat([df_antigo, df_novo])
-        df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+        # engine='python' e on_bad_lines='skip' ajudam a ler arquivos que já estavam corrompidos
+        try:
+            df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
+            df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
+            df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
+            df_total = pd.concat([df_antigo, df_novo])
+            df_total = df_total.drop_duplicates(subset=['ID_Unico'], keep='last')
+        except:
+            # Se o arquivo antigo estiver muito quebrado, substitui pelo novo
+            df_total = df_novo
     else:
         df_total = df_novo
 
-    # --- LIMPEZA DE DADOS (POWER BI FRIENDLY) ---
+    # --- LIMPEZA FINAL ---
     df_total = df_total.fillna('')
     df_total = df_total.replace([np.inf, -np.inf], 0)
     
@@ -145,8 +176,10 @@ def executar_robo():
     df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
     df_total = df_total.drop(columns=['Data_Temp'])
 
-    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig')
-    print(f"✅ Arquivo atualizado no GitHub: {len(df_total)} linhas.")
+    # SALVA O ARQUIVO "INDESTRUTÍVEL"
+    # quoting=csv.QUOTE_MINIMAL garante que o pandas coloque aspas apenas se necessário
+    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
+    print(f"✅ Arquivo salvo e sanitizado: {len(df_total)} linhas.")
 
 if __name__ == "__main__":
     executar_robo()
