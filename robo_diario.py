@@ -4,16 +4,21 @@ from datetime import datetime, timedelta
 import os
 import numpy as np
 import csv 
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --- CONFIGURAÇÃO ---
 PASTA_DADOS = "data"
 
-# ARQUIVOS
+# Arquivos CSV (GitHub)
 NOME_ARQUIVO_COMPLETO = "licitacoes_rn_COMPLETO.csv"
 CAMINHO_COMPLETO = os.path.join(PASTA_DADOS, NOME_ARQUIVO_COMPLETO)
-
 NOME_ARQUIVO_VISUAL = "licitacoes_rn_VISUALIZACAO.csv"
 CAMINHO_VISUAL = os.path.join(PASTA_DADOS, NOME_ARQUIVO_VISUAL)
+
+# Configuração Google Sheets
+NOME_PLANILHA_GOOGLE = "Base_Licitacoes_RN"  # Nome exato da sua planilha no Drive
+NOME_ABA = "Dados"                           # Nome da aba lá embaixo
 
 # Configurações do Portal Nacional (PNCP)
 BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
@@ -42,15 +47,15 @@ def limpar_dinheiro(valor_bruto):
 
 def limpar_texto_absoluto(texto):
     """
-    Limpa o texto, mas mantém compatibilidade com CSV padrão
+    Limpa texto para CSV e Google Sheets.
+    Remove aspas duplas, ponto-e-vírgula e quebras de linha.
     """
     if texto is None: return ""
     txt = str(texto)
-    # Remove apenas quebras de linha que destroem o CSV
     txt = txt.replace('\n', ' ').replace('\r', ' ')
-    # Remove tabs
+    txt = txt.replace(';', ',') 
+    txt = txt.replace('"', "'") # Troca aspas duplas por simples
     txt = txt.replace('\t', ' ')
-    # Remove espaços duplos
     return " ".join(txt.split())
 
 def classificar_auditor(objeto):
@@ -94,9 +99,14 @@ def classificar_auditor(objeto):
 
     return natureza, funcao
 
+# --- CONEXÃO GOOGLE ---
+def conectar_google():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    return ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+
 # --- ROBÔ ---
 def executar_robo():
-    print("🤖 Iniciando Robô GitHub (Modo CSV Padrão Seguro)...")
+    print("🤖 Iniciando Robô Híbrido (GitHub + Google Sheets)...")
     
     if not os.path.exists(PASTA_DADOS):
         os.makedirs(PASTA_DADOS)
@@ -137,20 +147,18 @@ def executar_robo():
                 pagina += 1
             except: break
     
-    # --- CORREÇÃO DO ERRO AQUI EMBAIXO ---
     df_novo = pd.DataFrame(novos_dados)
     
     if df_novo.empty: 
         print("💤 Nenhum dado novo.")
         return
 
-    print("💾 Processando Base Completa...")
+    print("💾 Processando Base de Dados...")
 
-    # --- 1. GERA O ARQUIVO COMPLETO ---
+    # --- LÓGICA DE UNIFICAÇÃO ---
     df_total = df_novo
     if os.path.exists(CAMINHO_COMPLETO):
         try:
-            # Tenta ler com configurações flexíveis
             df_antigo = pd.read_csv(CAMINHO_COMPLETO, sep=';', encoding='utf-8-sig', on_bad_lines='skip', engine='python')
             df_antigo['ID_Unico'] = df_antigo['ID_Unico'].astype(str)
             df_novo['ID_Unico'] = df_novo['ID_Unico'].astype(str)
@@ -159,33 +167,50 @@ def executar_robo():
         except:
             df_total = df_novo
 
-    # Limpeza Final e Datas
+    # Limpeza Final de Datas e Nulos
     df_total = df_total.fillna('')
     df_total = df_total.replace([np.inf, -np.inf], 0)
     df_total['Data_Temp'] = pd.to_datetime(df_total['Data'], errors='coerce')
     df_total['Data'] = df_total['Data_Temp'].dt.strftime('%Y-%m-%d').fillna('')
     df_total['Data'] = df_total['Data'].replace(['nan', 'NaT', 'None'], '')
-    
-    # SALVA O COMPLETO (Com Quoting Padrão)
     df_total.drop(columns=['Data_Temp'], inplace=True, errors='ignore')
-    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
-    print(f"✅ Histórico Completo Atualizado: {len(df_total)} linhas.")
 
-    # --- 2. GERA O ARQUIVO VISUAL ---
-    print("💎 Gerando arquivo Visual...")
-    
+    # 1. SALVA CSV COMPLETO (GitHub)
+    df_total.to_csv(CAMINHO_COMPLETO, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
+    print(f"✅ GitHub (Base): {len(df_total)} linhas salvas.")
+
+    # 2. SALVA CSV VISUAL (GitHub - 30 dias)
     df_visual = df_total.copy()
     df_visual['Data_Filtro'] = pd.to_datetime(df_visual['Data'], errors='coerce')
     data_corte = datetime.now() - timedelta(days=30)
     df_visual = df_visual[df_visual['Data_Filtro'] >= data_corte]
     df_visual = df_visual.drop(columns=['Data_Filtro'])
+    if len(df_visual) > 2000: df_visual = df_visual.tail(2000)
     
-    if len(df_visual) > 2000:
-        df_visual = df_visual.tail(2000)
+    df_visual.to_csv(CAMINHO_VISUAL, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_NONE, escapechar='\\')
+    print(f"✅ GitHub (Visual): {len(df_visual)} linhas salvas.")
 
-    # SALVA O VISUAL (Com Quoting Padrão)
-    df_visual.to_csv(CAMINHO_VISUAL, index=False, sep=';', encoding='utf-8-sig', quoting=csv.QUOTE_MINIMAL)
-    print(f"✅ Arquivo Visual Atualizado: {len(df_visual)} linhas.")
+    # 3. SALVA NO GOOGLE SHEETS (Nuvem)
+    print("☁️ Enviando para Google Sheets...")
+    try:
+        creds = conectar_google()
+        client = gspread.authorize(creds)
+        sheet = client.open(NOME_PLANILHA_GOOGLE).worksheet(NOME_ABA)
+        
+        # Limpa e reescreve tudo (Overwrite) para garantir que fique igual ao CSV
+        # O Google Sheets tem limite de células (5 milhões), mas 5k linhas é tranquilo.
+        sheet.clear()
+        
+        # Prepara dados para upload (lista de listas)
+        # O gspread gosta de tipos nativos do Python, não numpy
+        dados_upload = [df_total.columns.values.tolist()] + df_total.values.tolist()
+        
+        sheet.update(range_name='A1', values=dados_upload)
+        print("✅ SUCESSO! Google Sheets sincronizado.")
+        
+    except Exception as e:
+        print(f"❌ Erro no Google Sheets: {e}")
+        # Não para o robô, pois já salvou no GitHub
 
 if __name__ == "__main__":
     executar_robo()
